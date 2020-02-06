@@ -1,9 +1,0 @@
-name: scmap
-channels:
-  - bioconda
-  - conda-forge 
-  - defaults 
-dependencies:
-  - openblas
-  - scmap-cli=0.0.4
-  - bioconductor-singlecellexperiment=1.6.0

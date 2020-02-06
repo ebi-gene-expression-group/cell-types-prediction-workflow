@@ -1,114 +1,96 @@
 #!/usr/bin/env nextflow 
 
-
-// specify query data channels 
-QUERY_MAT = Channel.fromPath(params.query_mat)
-QUERY_BARCODES = Channel.fromPath(params.query_barcodes)
-QUERY_GENES = Channel.fromPath(params.query_genes)
-QUERY_MARKERS = Channel.fromPath(params.query_markers)
-
-// download query data 
-process download_data{
-
-  input:
-    file(query_mat) from QUERY_MAT
-    file(query_barcodes) from QUERY_BARCODES
-    file(query_genes) from QUERY_GENES
-
-  output:
-    file("${params.query_10x_dir}") into QUERY_10X_DIR
-
-
-  """
-  get_query_data.R 
-
-  """
-
-}
-
 // read query data from 10x directory into SCE object 
 process read_query_sce {
-  conda "${baseDir}/envs/dropletutils.yaml"
+    conda "${baseDir}/envs/dropletutils.yaml"
 
-  input:
-    file(query_10x_dir) from QUERY_10X_DIR
-    
-  output:
-    file("query_sce.rds") into QUERY_SCE
+    input:
+        file(query_10x_dir) from QUERY_10X_DIR
 
-
-  """
-  dropletutils-read-10x-counts.R\
-            --samples ${query_10x_dir}\
-            --col-names ${params.col_names}\
-            --output-object-file query_sce.rds
-  """
+    output:
+        file("query_sce.rds") into QUERY_SCE
 
 
+    """
+    dropletutils-read-10x-counts.R\
+        --samples ${query_10x_dir}\
+        --col-names ${params.col_names}\
+        --output-object-file query_sce.rds
+    """
 }
 
 process scpred_preprocess {
-  // get scpred-specific matrices from query SCE object
-  input:
-    file(query_sce) from QUERY_SCE
+    // get scpred-specific matrices from query SCE object
+    input:
+        file(query_sce) from QUERY_SCE
 
-  output:
-    file("query_expr_mat.rds") into SCPRED_QUERY_MAT
+    output:
+        file("query_expr_mat.rds") into SCPRED_QUERY_MAT
 
-  """
-  scpred_preprocess_data.R\
-            --input-sce-object ${query_sce}\
-            --normalised-counts-slot ${params.norm_counts_slot}\
-            --output-matrix-object query_expr_mat.rds
-  """
+    """
+    scpred_preprocess_data.R\
+        --input-sce-object ${query_sce}\
+        --normalised-counts-slot ${params.norm_counts_slot}\
+        --output-matrix-object query_expr_mat.rds
+    """
 }
 
-
+// load pre-trained scpred classifiers 
 SCPRED_MODELS = Channel.fromPath(params.scpred_models_dir)
 process scpred_run {
-  conda "${baseDir}/envs/scpred.yaml" 
-  // run scpred prediction on each classifier emitted from MODELS channel
-  // need pre-processed counts matrix built from query data 
-  input:
-    file(query_mat) from SCPRED_QUERY_MAT
-    file(model) from SCPRED_MODELS
+    conda "${baseDir}/envs/scpred.yaml" 
 
-  output:
-    set val(), file() into 
+    input:
+        file(query_mat) from SCPRED_QUERY_MAT
+        file(model) from SCPRED_MODELS
 
+    output:
+        // expect classifier name to correspond to training data set accession code
+        set val('acc'), file("${acc}_predicted.csv") into SCPRED_OUTPUT
 
-  """
-  name=$(echo a.txt | cut -d . -f 1)
+    """
+    acc=basename ${model} .rds
 
-  scpred_predict.R\
-          --input-object ${eval_trained_model}\
-          --pred-data ${query_mat}\
-          --output-path ${}
-  """
-
-
-
+    scpred_predict.R\
+        --input-object ${model}\
+        --pred-data ${query_mat}\
+        --threshold-level ${params.pred_threshold}
+        --output-path ${acc}_predicted.csv
+    """
 }
 
-process scpred_get_labels {}
+process scpred_get_labels {
+    conda "${baseDir}/envs/scpred.yaml" 
 
-SCMAP_CELL_MODELS = Channel.fromPath(params.scmap_cell_models_dir)
-process run_scmap_cell {}
+    input:
+        set val(acc), file(scpred_output_tbl) from SCPRED_OUTPUT
 
-process get_scmap_cell_labels {}
+    output:
+        file("${acc}_final_labs.tsv") into SCPRED_LABELS
 
-SCMAP_CLUST_MODELS = Channel.fromPath(params.scmap_clust_models_dir)
-process run_scmap_clust {}
+    """
+    scpred_get_std_output.R\
+            --predictions-file ${scpred_output_tbl}\
+            --get-scores\
+            --output-table ${acc}_final_labs.tsv
+    """
+}
 
-process get_scmap_clust_labels {}
+// combine output files into single directory and copy into outer pipeline
+process scpred_combine_labels {
+    publishDir "${params.results_dir}", mode: 'copy'
+    conda "${baseDir}/envs/scpred.yaml" 
 
+    input:
+        file(labels) from SCPRED_LABELS.collect()
+    output:
+        file('scpred_labs') into SCPRED_LABELS_DIR
 
-
-
-
-
-
-
-
-
-
+    """
+    mkdir -p scpred_labs
+    for file in ${labels}
+    do
+        mv \$file scpred_labs
+    done
+    """
+}
