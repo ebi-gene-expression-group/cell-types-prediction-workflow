@@ -4,6 +4,6 @@ channels:
   - conda-forge 
   - defaults 
 dependencies:
-  - openblas
-  - scpred-cli=0.0.3 
+  - scpred-cli=0.0.5
+  - r-kernlab=0.9_27 
   - bioconductor-singlecellexperiment=1.6.0
